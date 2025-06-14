@@ -4,6 +4,7 @@ import requests
 import os
 import geoip2.database
 from geoip2.errors import AddressNotFoundError
+import random
 
 notExit = []
 
@@ -74,6 +75,8 @@ else:
 
 client_location = ip_to_country(client_ip)
 dest_location = ip_to_country(dest_ip)
+
+
 
 #-------------------------------------- main logic of path -------------------------------------
 
@@ -163,12 +166,27 @@ def exit_security(client_loc, dest_loc, guard, exit):
     score = 0
     if exit_country != client_loc:
         score += 1
-    if not is_in_alliance(client_loc, exit_country):
-        score += 1
     score = score * get_country_trust(exit_country)
+    if score == 0:
+        return None
     return score
 
 
+#----------------------------------- middle -------------------------------------------------
+import random
+
+def select_middle(guard, exit):
+    guard_country = guard.get("country")
+    exit_country = exit.get("country")
+    candidates = []
+    for relay in relaysData:
+        relay_country = relay.get("country")
+        if (relay_country != guard_country and
+            relay_country != exit_country):
+            candidates.append(relay)
+    if not candidates:
+        return None
+    return random.choice(candidates)
 
 
 
@@ -177,7 +195,7 @@ def exit_security(client_loc, dest_loc, guard, exit):
 
 def select_path(in_guards, in_exit):
     GUARD_PARAMS = {         
-        "safe_upper": 0.95 ,  #
+        "safe_upper": 0.95 ,
         "safe_lower": 2.0 ,      
         "accept_upper": 0.5 ,         
         "accept_lower": 5.0 ,       
@@ -208,7 +226,8 @@ def select_path(in_guards, in_exit):
     index = 0
     while (index < n and 
         guards[index]["score"] >= GUARD_PARAMS["safe_upper"] * max_trust_score and  
-        1 - guards[index]["score"] <= GUARD_PARAMS["safe_lower"] * (1 - max_trust_score)):
+        1 - guards[index]["score"] <= GUARD_PARAMS["safe_lower"] * (1 - max_trust_score) and 
+        w < desired_bandwidth):
         safeGuards.append(guards[index])
         w = w + guards[index]['bandwidth']['average']
         index += 1  
@@ -219,47 +238,97 @@ def select_path(in_guards, in_exit):
         acceptableGuards.append(guards[index])
         w = w + guards[index]['bandwidth']['average']        
         index += 1
+        
+    if len(safeGuards) == 0 and len(acceptableGuards) == 0:
+            return None
+        
+    #Reorder 
+    safeGuards = sorted(safeGuards, key=lambda g: (g.get('score', 0), g.get('bandwidth', {}).get('average', 0)),reverse=True)
+    acceptableGuards = sorted(acceptableGuards, key=lambda g: (g.get('score', 0), g.get('bandwidth', {}).get('average', 0)),reverse=True)
+    FinalGuard = None
+    FinalMiddle = None
+    FinalExit = None
+    isFinished = False
+    for i in range(2):
+        loopingGuard = safeGuards
+        if i == 1:
+            loopingGuard = acceptableGuards
+        for safeGuard in loopingGuard:
+            exits = []
+            for exit in in_exit:
+                result =  exit_security(client_location, dest_location , safeGuard, exit)
+                if result is None:
+                    continue
+                exit["score"] = result
+                exits.append(exit)
 
-    guard = {}
-    availableExits = []
-    for safeGuard in safeGuards:
-        exits = []
-        for exit in in_exit:
-            result =  exit_security(client_location, dest_ip, safeGuard.get("country"), dest_location)
-            if result is None:
+
+            if len(exits) == 0:
                 continue
-            exit["score"] = result
-            exits.append(exit)
-        if len(exits) is 0:
-            continue
 
-        exits = sorted(exits, key=lambda g: g.get('score', 0), reverse=True) 
-        max_trust_score = exits[0]["score"]
 
-        w = 0 # gonna use newtork as the weight 
-        index = 0
-        safeExits = [] # S
-        acceptableExits = []
-        while (index < n and 
-            exits[index]["score"] >= EXIT_PARAMS["safe_upper"] * max_trust_score and  
-            1 - exits[index]["score"] <= EXIT_PARAMS["safe_lower"] * (1 - max_trust_score)):
-            safeExits.append(exits[index])
-            w = w + exits[index]['bandwidth']['average']
-            index += 1
+            exits = sorted(exits, key=lambda g: g.get('score', 0), reverse=True) 
+            max_trust_score = exits[0]["score"]
+            
+            w = 0 # gonna use newtork as the weight 
+            index = 0
+            safeExits = [] # S
+            acceptableExits = []
+            n = len(exits) 
 
-        while (index < n and 
-            exits[index]["score"] >= EXIT_PARAMS["accept_upper"] * max_trust_score and  
-            1 - exits[index]["score"] <= EXIT_PARAMS["accept_lower"] * (1 - max_trust_score) and
-            w < desired_bandwidth):
-            acceptableExits.append(exits[index])
-            w = w + exits[index]['bandwidth']['average']        
-            index += 1
+            while (index < n and 
+                exits[index]["score"] >= EXIT_PARAMS["safe_upper"] * max_trust_score and  
+                1 - exits[index]["score"] <= EXIT_PARAMS["safe_lower"] * (1 - max_trust_score) and
+                w < desired_bandwidth):
 
-        print(len(safeExits))
-        print(len(acceptableExits))
-        guard = safeGuard
-        availableExits = exits
-        break
+                safeExits.append(exits[index])
+                w = w + exits[index]['bandwidth']['average']
+                index += 1
+
+            while (index < n and 
+                exits[index]["score"] >= EXIT_PARAMS["accept_upper"] * max_trust_score and  
+                1 - exits[index]["score"] <= EXIT_PARAMS["accept_lower"] * (1 - max_trust_score) and
+                w < desired_bandwidth):
+
+                acceptableExits.append(exits[index])
+                w = w + exits[index]['bandwidth']['average']        
+                index += 1
+
+            if len(acceptableExits) == 0 and len(safeExits) == 0:
+                continue
+
+            availableExits = safeExits
+            if len(safeExits) == 0: 
+                availableExits = acceptableExits
+            
+            availableExits = sorted(availableExits, key=lambda g: (g.get('score', 0), g.get('bandwidth', {}).get('average', 0)),reverse=True)
+
+            for availableExit in availableExits:
+                FinalMiddle = select_middle(safeGuard, availableExit)
+                if FinalMiddle is None:
+                    continue
+                FinalExit = availableExit
+                break
+            if FinalMiddle is None:
+                continue       
+            FinalGuard = safeGuard
+            isFinished = True
+            break
+
+        if isFinished:
+            break
+
+
+        
+    if FinalMiddle is None or FinalExit is None or FinalGuard is None:
+            return None
+
+    path = []
+    path.append(FinalGuard)
+    path.append(FinalMiddle)
+    path.append(FinalExit)
+    return path
+
                             
 
     
@@ -270,7 +339,27 @@ def select_path(in_guards, in_exit):
 #! optimization remove at the biggining all the fit exits not possible to get a score as, it depends on the guard
 exitList = populateExitList(relaysData)
 guardList = guard_security(client_location, relaysData)
-select_path(guardList, exitList)
+result = select_path(guardList, exitList)
+if result is None:
+    print("No path found")
+else:
+    for relay in result:
+        print(relay.get("country"))
+
+output_path = "output.json"
+if result is None:
+    print("No path found")
+    data_to_save = {"path": None}
+else:
+
+    FinalGuard = result[0]
+    FinalMiddle = result[1]
+    FinalExit = result[2]
+    path = [{"guard": FinalGuard}, {"middle": FinalMiddle}, {"exit":FinalExit}]
+    data_to_save = {"path": path}
+
+with open(output_path, "w", encoding="utf-8") as f:
+    json.dump(data_to_save, f, indent=4)
 
 # guard and exit cant be in a alliance or in the same country
 # guard and exit cant be on the same family
@@ -279,4 +368,3 @@ select_path(guardList, exitList)
 
 # 20% of total bandwidth
 # 
-
