@@ -131,7 +131,6 @@ def canExit(ip, node):
             if '*:*' in rule or ip_part == ip:
                 return False 
             continue
-
 def populateExitList(relays):
     exitList = []
     for relay in relays:
@@ -281,81 +280,3 @@ select_path(guardList, exitList)
 # 20% of total bandwidth
 # 
 
-
-
-
-
-def select_path(poss_guards, poss_exits, alpha_params, alliances):
-    GUARD_PARAMS = {
-        "safe_upper": 0.95,
-        "safe_lower": 2.0,
-        "accept_upper": 0.5,
-        "accept_lower": 5.0,
-        "bandwidth_frac": 0.2
-    }
-
-    EXIT_PARAMS = {
-        "safe_upper": 0.95,
-        "safe_lower": 2.0,
-        "accept_upper": 0.1,
-        "accept_lower": 10.0,
-        "bandwidth_frac": 0.2
-    }
-
-    def categorize_relays(relays, params):
-        relays.sort(key=lambda x: x["trust"], reverse=True)
-        max_trust = relays[0]["trust"] if relays else 0
-        safe, acceptable = [], []
-        total_weight = 0
-        i = 0
-        while i < len(relays) and (
-            relays[i]["trust"] >= params["safe_upper"] * max_trust and
-            1 - relays[i]["trust"] <= params["safe_lower"] * (1 - max_trust)
-        ) and total_weight < params["bandwidth_frac"]:
-            safe.append(relays[i])
-            total_weight += relays[i]["weight"]
-            i += 1
-        while i < len(relays) and (
-            relays[i]["trust"] >= params["accept_upper"] * max_trust and
-            1 - relays[i]["trust"] <= params["accept_lower"] * (1 - max_trust)
-        ) and total_weight < params["bandwidth_frac"]:
-            acceptable.append(relays[i])
-            total_weight += relays[i]["weight"]
-            i += 1
-        return safe, acceptable
-
-    safe_guards, acceptable_guards = categorize_relays(poss_guards, GUARD_PARAMS)
-    safe_exits, acceptable_exits = categorize_relays(poss_exits, EXIT_PARAMS)
-
-    def is_disjoint(g, e):
-        return (
-            g["fingerprint"] != e["fingerprint"] and
-            g["fingerprint"] not in e.get("family", []) and
-            e["fingerprint"] not in g.get("family", []) and
-            not check_if_same_country_or_alliance(g, e, alliances)
-        )
-
-    def generate_paths(g_list, e_list):
-        paths = []
-        for g in g_list:
-            for e in e_list:
-                if is_disjoint(g, e):
-                    paths.append({
-                        "guard": g,
-                        "exit": e,
-                        "trust": min(g["trust"], e["trust"]),
-                        "bandwidth": min(g["weight"], e["weight"])
-                    })
-        return paths
-
-    candidates = []
-    candidates += generate_paths(safe_guards, safe_exits)
-    if not candidates:
-        candidates += generate_paths(safe_guards, acceptable_exits)
-    if not candidates:
-        candidates += generate_paths(acceptable_guards, safe_exits)
-    if not candidates:
-        candidates += generate_paths(acceptable_guards, acceptable_exits)
-
-    candidates.sort(key=lambda x: (x["trust"], x["bandwidth"]), reverse=True)
-    return candidates[0] if candidates else None
